@@ -1,0 +1,29 @@
+
+__pycache__/
+*.py[cod]
+*.sqlite3
+db.sqlite3
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Python build files
+build/
+dist/
+wheels/
+*.egg-info/
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+desktop.ini
+
+# Logs
+*.log
