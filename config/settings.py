@@ -20,6 +20,7 @@ import dj_database_url
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR /".env")
 KHALTI_SECRET_KEY = os.getenv("KHALTI_SECRET_KEY")
+
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY")
 
 # Quick-start development settings - unsuitable for production

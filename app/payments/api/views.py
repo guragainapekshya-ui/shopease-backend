@@ -1,16 +1,21 @@
+
 import requests
-from django.conf import settings 
-from rest_framework import status
-from rest_framework.permissions import IsAuthenticated
-from rest_framework .response import Response
-from rest_framework.generics import GenericAPIView
-from app.orders.models import Order,Status
-from ..models import Payment,PaymentStatus
-from django.shortcuts import get_object_or_404
-from drf_spectacular.utils import extend_schema
+
+from django.conf import settings
 from django.db import transaction
-# Create your views here.
+from django.shortcuts import get_object_or_404, redirect
+
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.generics import GenericAPIView
+
+from drf_spectacular.utils import extend_schema
+
+from app.orders.models import Order, Status
+from ..models import Payment, PaymentStatus
 from .serializer import PaymentInitiateSerializer
+
 
 class PaymentInitiateView(GenericAPIView):
     serializer_class = PaymentInitiateSerializer
@@ -21,6 +26,7 @@ class PaymentInitiateView(GenericAPIView):
         tags=["Payments"]
     )
     def post(self, request, *args, **kwargs):
+
         order_id = request.data.get("order_id")
 
         order = get_object_or_404(
@@ -42,32 +48,54 @@ class PaymentInitiateView(GenericAPIView):
         amount_paisa = int(payment.total_amount * 100)
 
         payload = {
-            "return_url": "http://127.0.0.1:8000/api/payments/verify/",
-            "website_url": "http://127.0.0.1:8000",
+            "return_url": "https://shopease-backend-l1z2.onrender.com/api/payments/verify/",
+            "website_url": "https://shopease-henna.vercel.app/",
             "amount": amount_paisa,
             "purchase_order_id": str(order.id),
             "purchase_order_name": f"Order {order.id}",
         }
 
-        khalti_response = requests.post(
-            "https://dev.khalti.com/api/v2/epayment/initiate/",
-            headers={
-                "Authorization": f"Key {settings.KHALTI_SECRET_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-        )
+        try:
+            khalti_response = requests.post(
+                "https://dev.khalti.com/api/v2/epayment/initiate/",
+                headers={
+                    "Authorization": f"Key {settings.KHALTI_SECRET_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=20,
+            )
+
+        except requests.exceptions.RequestException as error:
+            print("KHALTI CONNECTION ERROR:", str(error))
+
+            return Response(
+                {"detail": "Unable to connect to Khalti."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
         if khalti_response.status_code != 200:
+            print("KHALTI STATUS:", khalti_response.status_code)
+            print("KHALTI ERROR:", khalti_response.text)
+
             return Response(
                 {"detail": "Unable to initiate Khalti payment."},
                 status=status.HTTP_502_BAD_GATEWAY
             )
 
-        response_data = khalti_response.json()
+        try:
+            response_data = khalti_response.json()
 
-        pidx = response_data["pidx"]
-        payment_url = response_data["payment_url"]
+            pidx = response_data["pidx"]
+            payment_url = response_data["payment_url"]
+
+        except (ValueError, KeyError):
+            print("INVALID KHALTI RESPONSE:", khalti_response.text)
+
+            return Response(
+                {"detail": "Invalid response received from Khalti."},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
 
         payment.pidx = pidx
         payment.status = PaymentStatus.INITIATED
@@ -77,13 +105,16 @@ class PaymentInitiateView(GenericAPIView):
             "payment_url": payment_url,
             "pidx": pidx,
         })
-    
+
+
 class PaymentVerifyView(GenericAPIView):
+
     @extend_schema(
-            summary="PaymentVerify",
-            tags=["Payments"]
-        )
+        summary="PaymentVerify",
+        tags=["Payments"]
+    )
     def get(self, request, *args, **kwargs):
+
         pidx = request.query_params.get("pidx")
 
         if not pidx:
@@ -96,38 +127,36 @@ class PaymentVerifyView(GenericAPIView):
             Payment.objects.filter(pidx=pidx)
         )
 
-        # Check if payment is already completed
         if payment.status == PaymentStatus.COMPLETED:
-            return Response(
-                {"detail": "Payment is already completed."},
-                status=status.HTTP_200_OK
+            return redirect(
+                f"https://shopease-henna.vercel.app/payment-result?status=success&order_id={payment.order_id}"
             )
 
-        # Contact Khalti
         try:
             lookup_response = requests.post(
                 "https://dev.khalti.com/api/v2/epayment/lookup/",
                 headers={
                     "Authorization": f"Key {settings.KHALTI_SECRET_KEY}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 },
                 json={
                     "pidx": pidx
                 },
-                timeout=10
+                timeout=20,
             )
 
-        except requests.exceptions.RequestException:
+        except requests.exceptions.RequestException as error:
+            print("KHALTI LOOKUP ERROR:", str(error))
+
             return Response(
                 {"detail": "Unable to connect to Khalti. Please try again later."},
                 status=status.HTTP_502_BAD_GATEWAY
             )
 
-        # Parse Khalti response
         try:
             response_data = lookup_response.json()
 
-        except requests.exceptions.JSONDecodeError:
+        except ValueError:
             return Response(
                 {"detail": "Khalti returned an invalid response."},
                 status=status.HTTP_502_BAD_GATEWAY
@@ -135,7 +164,6 @@ class PaymentVerifyView(GenericAPIView):
 
         payment_status = response_data.get("status")
 
-        # Handle expired payment
         if lookup_response.status_code == 400 and payment_status == "Expired":
             payment.status = PaymentStatus.EXPIRED
             payment.save()
@@ -145,7 +173,6 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Handle cancelled payment
         elif lookup_response.status_code == 400 and payment_status == "User canceled":
             payment.status = PaymentStatus.CANCELLED
             payment.save()
@@ -155,8 +182,10 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Handle other HTTP errors
         if lookup_response.status_code != 200:
+            print("KHALTI LOOKUP STATUS:", lookup_response.status_code)
+            print("KHALTI LOOKUP RESPONSE:", lookup_response.text)
+
             return Response(
                 {"detail": "Unable to verify payment with Khalti."},
                 status=status.HTTP_502_BAD_GATEWAY
@@ -165,23 +194,21 @@ class PaymentVerifyView(GenericAPIView):
         khalti_amount = response_data.get("total_amount")
         expected_amount = int(payment.total_amount * 100)
 
-        # Handle successful payment
-
         if payment_status == "Completed" and khalti_amount == expected_amount:
-         with transaction.atomic():
-            payment.status = PaymentStatus.COMPLETED
-            payment.save()
 
-            payment.order.status = Status.PAID
-            payment.order.save()
+            with transaction.atomic():
+                payment.status = PaymentStatus.COMPLETED
+                payment.save()
 
-         return Response(
-                {"detail": "Payment completed successfully."},
-                status=status.HTTP_200_OK
+                payment.order.status = Status.PAID
+                payment.order.save()
+
+            return redirect(
+                f"https://shopease-henna.vercel.app/payment-result?status=success&order_id={payment.order_id}"
             )
 
-        # Handle amount mismatch
         elif payment_status == "Completed" and khalti_amount != expected_amount:
+
             payment.status = PaymentStatus.AMOUNT_MISMATCH
             payment.save()
 
@@ -190,8 +217,8 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Handle pending payment
         elif payment_status == "Pending":
+
             payment.status = PaymentStatus.PENDING
             payment.save()
 
@@ -200,8 +227,8 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_200_OK
             )
 
-        # Handle initiated payment
         elif payment_status == "Initiated":
+
             payment.status = PaymentStatus.INITIATED
             payment.save()
 
@@ -210,8 +237,8 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_200_OK
             )
 
-        # Handle failed payment
         elif payment_status == "Failed":
+
             payment.status = PaymentStatus.FAILED
             payment.save()
 
@@ -220,7 +247,6 @@ class PaymentVerifyView(GenericAPIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Handle unexpected statuses
         else:
             return Response(
                 {"detail": "Payment is not completed. Order remains pending."},
