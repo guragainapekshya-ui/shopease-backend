@@ -20,7 +20,15 @@ from django.urls import path,include
 from drf_spectacular.views import SpectacularAPIView,SpectacularSwaggerView
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
+def api_home(request):
+    return JsonResponse({
+        "message": "Welcome to ShopEase Backend!",
+        "status": "API is running successfully",
+        "framework": "Django REST Framework"
+    })
 urlpatterns = [
+    path('', api_home, name='api-home'),
     path('admin/', admin.site.urls),
     path('api/accounts/',include("app.accounts.api.urls")),
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
